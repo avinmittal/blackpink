@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Segment Player</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 24px; }
+    #player { max-width: 900px; aspect-ratio: 16/9; width: 100%; }
+    .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+    button { padding: 10px 14px; font-size: 16px; cursor: pointer; }
+    .hint { opacity: 0.75; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <h2>Play two segments seamlessly</h2>
+  <div id="player"></div>
+
+  <div class="row">
+    <button id="playBtn">Play segments</button>
+    <button id="stopBtn">Stop</button>
+    <span class="hint">Note: some browsers block autoplay — click “Play segments”.</span>
+  </div>
+
+  <script>
+    // Your video + segments (seconds)
+    const videoId = "IHNzOHi8sJs";
+    const segments = [
+      { start: 0,  end: 24 },
+      { start: 66, end: 94 }
+    ];
+
+    let player;
+    let segIndex = 0;
+    let ticker = null;
+
+    // Load YouTube IFrame API
+    const tag = document.createElement("script");
+    tag.src = "https://www.youtube.com/iframe_api";
+    document.head.appendChild(tag);
+
+    function onYouTubeIframeAPIReady() {
+      player = new YT.Player("player", {
+        videoId,
+        playerVars: {
+          playsinline: 1,
+          rel: 0,
+          modestbranding: 1
+        },
+        events: {
+          onReady: () => {},
+          onStateChange: onPlayerStateChange
+        }
+      });
+    }
+    window.onYouTubeIframeAPIReady = onYouTubeIframeAPIReady;
+
+    function playCurrentSegment() {
+      const s = segments[segIndex];
+      // Seek precisely, then play
+      player.seekTo(s.start, true);
+      player.playVideo();
+
+      // Poll current time to jump exactly at end
+      if (ticker) clearInterval(ticker);
+      ticker = setInterval(() => {
+        const t = player.getCurrentTime();
+        if (t >= s.end - 0.05) { // tiny cushion
+          segIndex += 1;
+          if (segIndex < segments.length) {
+            playCurrentSegment();
+          } else {
+            stopAll();
+          }
+        }
+      }, 50);
+    }
+
+    function stopAll() {
+      if (ticker) clearInterval(ticker);
+      ticker = null;
+      try { player.pauseVideo(); } catch(e) {}
+    }
+
+    function onPlayerStateChange(e) {
+      // If user pauses, stop the ticker cleanly
+      if (e.data === YT.PlayerState.PAUSED || e.data === YT.PlayerState.ENDED) {
+        if (ticker) { clearInterval(ticker); ticker = null; }
+      }
+    }
+
+    document.getElementById("playBtn").addEventListener("click", () => {
+      segIndex = 0;
+      playCurrentSegment();
+    });
+
+    document.getElementById("stopBtn").addEventListener("click", stopAll);
+  </script>
+</body>
+</html>
