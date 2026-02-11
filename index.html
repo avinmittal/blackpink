@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>YouTube Segment Player</title>
+  <title>Multi-Segment Player</title>
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 24px; }
     #player { width: min(900px, 100%); aspect-ratio: 16/9; }
@@ -12,7 +12,7 @@
   </style>
 </head>
 <body>
-  <h2>Play 2 segments back-to-back</h2>
+  <h2>Play 3 segments back-to-back</h2>
   <div id="player"></div>
 
   <div style="margin-top:12px;">
@@ -20,14 +20,14 @@
     <button id="stopBtn">Stop</button>
   </div>
   <div class="hint">
-    If you’re on iPhone/Safari/TV browsers, autoplay is often blocked — click “Play segments”.
+    Click Play if autoplay doesn’t start automatically in your browser.
   </div>
 
   <script>
-    const videoId = "IHNzOHi8sJs";
     const segments = [
-      { start: 0,  end: 24 },
-      { start: 66, end: 94 }
+      { videoId: "IHNzOHi8sJs", start: 0,  end: 24 },
+      { videoId: "IHNzOHi8sJs", start: 66, end: 94 },
+      { videoId: "2S24-y0Ij3Y", start: 59, end: 92 }
     ];
 
     let player;
@@ -36,22 +36,15 @@
     let rafId = null;
     let intervalId = null;
 
-    // Load IFrame API
     const tag = document.createElement("script");
     tag.src = "https://www.youtube.com/iframe_api";
     document.head.appendChild(tag);
 
     window.onYouTubeIframeAPIReady = () => {
       player = new YT.Player("player", {
-        videoId,
-        playerVars: {
-          playsinline: 1,
-          rel: 0,
-          modestbranding: 1
-        },
-        events: {
-          onStateChange: onStateChange
-        }
+        videoId: segments[0].videoId,
+        playerVars: { playsinline: 1, rel: 0, modestbranding: 1 },
+        events: { onStateChange: onStateChange }
       });
     };
 
@@ -59,56 +52,42 @@
       segIndex = i;
       const s = segments[segIndex];
 
-      // Stop any previous monitors
       stopMonitoring();
 
-      // Seek, then play
-      player.seekTo(s.start, true);
-      player.playVideo();
-      // Monitoring starts when we actually get PLAYING state
+      // If videoId changed, load the new one
+      if (player.getVideoData().video_id !== s.videoId) {
+        player.loadVideoById({ videoId: s.videoId, startSeconds: s.start, endSeconds: s.end });
+      } else {
+        player.seekTo(s.start, true);
+        player.playVideo();
+      }
+      // Monitoring will start on PLAYING
     }
 
     function onStateChange(e) {
-      if (!player) return;
-
-      if (e.data === YT.PlayerState.PLAYING) {
-        startMonitoring();
-      } else if (e.data === YT.PlayerState.PAUSED || e.data === YT.PlayerState.ENDED) {
-        stopMonitoring();
-      }
-      // If BUFFERING happens, we keep monitoring off until PLAYING resumes
-      if (e.data === YT.PlayerState.BUFFERING) {
-        stopMonitoring();
-      }
+      if (e.data === YT.PlayerState.PLAYING) startMonitoring();
+      else if (e.data === YT.PlayerState.PAUSED || e.data === YT.PlayerState.ENDED) stopMonitoring();
+      if (e.data === YT.PlayerState.BUFFERING) stopMonitoring();
     }
 
     function startMonitoring() {
       if (monitoring) return;
       monitoring = true;
 
-      const check = () => {
+      const monitor = () => {
         if (!monitoring) return;
-
         const s = segments[segIndex];
         const t = player.getCurrentTime();
 
-        // small cushion to avoid missing due to timer granularity
         if (t >= s.end - 0.08) {
-          if (segIndex + 1 < segments.length) {
-            playSegment(segIndex + 1);
-            return;
-          } else {
-            player.pauseVideo();
-            stopMonitoring();
-            return;
-          }
+          if (segIndex + 1 < segments.length) playSegment(segIndex + 1);
+          else { player.pauseVideo(); stopMonitoring(); }
+          return;
         }
-        rafId = requestAnimationFrame(check);
+        rafId = requestAnimationFrame(monitor);
       };
+      rafId = requestAnimationFrame(monitor);
 
-      rafId = requestAnimationFrame(check);
-
-      // Fallback interval (some embedded browsers throttle rAF)
       intervalId = setInterval(() => {
         if (!monitoring) return;
         const s = segments[segIndex];
@@ -123,8 +102,8 @@
     function stopMonitoring() {
       monitoring = false;
       if (rafId) cancelAnimationFrame(rafId);
-      rafId = null;
       if (intervalId) clearInterval(intervalId);
+      rafId = null;
       intervalId = null;
     }
 
