@@ -1,0 +1,141 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>YouTube Segment Player</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 24px; }
+    #player { width: min(900px, 100%); aspect-ratio: 16/9; }
+    button { padding: 10px 14px; font-size: 16px; margin-right: 8px; cursor: pointer; }
+    .hint { opacity: .75; font-size: 14px; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <h2>Play 2 segments back-to-back</h2>
+  <div id="player"></div>
+
+  <div style="margin-top:12px;">
+    <button id="playBtn">Play segments</button>
+    <button id="stopBtn">Stop</button>
+  </div>
+  <div class="hint">
+    If you’re on iPhone/Safari/TV browsers, autoplay is often blocked — click “Play segments”.
+  </div>
+
+  <script>
+    const videoId = "IHNzOHi8sJs";
+    const segments = [
+      { start: 0,  end: 24 },
+      { start: 66, end: 94 }
+    ];
+
+    let player;
+    let segIndex = 0;
+    let monitoring = false;
+    let rafId = null;
+    let intervalId = null;
+
+    // Load IFrame API
+    const tag = document.createElement("script");
+    tag.src = "https://www.youtube.com/iframe_api";
+    document.head.appendChild(tag);
+
+    window.onYouTubeIframeAPIReady = () => {
+      player = new YT.Player("player", {
+        videoId,
+        playerVars: {
+          playsinline: 1,
+          rel: 0,
+          modestbranding: 1
+        },
+        events: {
+          onStateChange: onStateChange
+        }
+      });
+    };
+
+    function playSegment(i) {
+      segIndex = i;
+      const s = segments[segIndex];
+
+      // Stop any previous monitors
+      stopMonitoring();
+
+      // Seek, then play
+      player.seekTo(s.start, true);
+      player.playVideo();
+      // Monitoring starts when we actually get PLAYING state
+    }
+
+    function onStateChange(e) {
+      if (!player) return;
+
+      if (e.data === YT.PlayerState.PLAYING) {
+        startMonitoring();
+      } else if (e.data === YT.PlayerState.PAUSED || e.data === YT.PlayerState.ENDED) {
+        stopMonitoring();
+      }
+      // If BUFFERING happens, we keep monitoring off until PLAYING resumes
+      if (e.data === YT.PlayerState.BUFFERING) {
+        stopMonitoring();
+      }
+    }
+
+    function startMonitoring() {
+      if (monitoring) return;
+      monitoring = true;
+
+      const check = () => {
+        if (!monitoring) return;
+
+        const s = segments[segIndex];
+        const t = player.getCurrentTime();
+
+        // small cushion to avoid missing due to timer granularity
+        if (t >= s.end - 0.08) {
+          if (segIndex + 1 < segments.length) {
+            playSegment(segIndex + 1);
+            return;
+          } else {
+            player.pauseVideo();
+            stopMonitoring();
+            return;
+          }
+        }
+        rafId = requestAnimationFrame(check);
+      };
+
+      rafId = requestAnimationFrame(check);
+
+      // Fallback interval (some embedded browsers throttle rAF)
+      intervalId = setInterval(() => {
+        if (!monitoring) return;
+        const s = segments[segIndex];
+        const t = player.getCurrentTime();
+        if (t >= s.end - 0.08) {
+          if (segIndex + 1 < segments.length) playSegment(segIndex + 1);
+          else { player.pauseVideo(); stopMonitoring(); }
+        }
+      }, 100);
+    }
+
+    function stopMonitoring() {
+      monitoring = false;
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = null;
+      if (intervalId) clearInterval(intervalId);
+      intervalId = null;
+    }
+
+    document.getElementById("playBtn").addEventListener("click", () => {
+      playSegment(0);
+    });
+
+    document.getElementById("stopBtn").addEventListener("click", () => {
+      stopMonitoring();
+      try { player.pauseVideo(); } catch {}
+    });
+  </script>
+</body>
+</html>
