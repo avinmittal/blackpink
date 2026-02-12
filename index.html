@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Happy Birthday Aadya</title>
+<title>Playback</title>
 
 <link rel="preconnect" href="https://www.youtube.com">
 <link rel="preconnect" href="https://www.youtube-nocookie.com">
@@ -14,37 +14,44 @@
 html, body {
   margin: 0;
   padding: 0;
-  background: #000;
+  background: black;
   height: 100%;
   overflow: hidden;
 }
+
+#stage {
+  position: fixed;
+  inset: 0;
+  background: black;
+}
+
 #player {
   width: 100%;
   height: 100%;
 }
 
-/* Tiny "beat flash" only for cross-video cuts (optional mask) */
-#flash {
+#fade {
   position: fixed;
   inset: 0;
-  background: rgba(255,255,255,0.12);
-  opacity: 0;
+  background: black;
   pointer-events: none;
-  transition: opacity 40ms linear;
-  z-index: 20;
+  opacity: 0;
+  transition: opacity 220ms ease-in-out; /* quicker */
 }
-#flash.on { opacity: 1; }
+
+#fade.on {
+  opacity: 1;
+}
 </style>
 </head>
 <body>
 
-<div id="player"></div>
-<div id="flash"></div>
+<div id="stage">
+  <div id="player"></div>
+</div>
+<div id="fade"></div>
 
 <script>
-/* =========================
-   SEGMENTS (in order)
-   ========================= */
 const segments = [
   { videoId: "IHNzOHi8sJs", start: 0,  end: 24 },
   { videoId: "IHNzOHi8sJs", start: 66, end: 94 },
@@ -53,99 +60,69 @@ const segments = [
   { videoId: "bwmSjveL3Lc", start: 82, end: 113 }
 ];
 
-/* =========================
-   TUNING
-   - Tighten ONLY same-video cuts
-   ========================= */
-const END_MARGIN_SAME_SEC = 0.03;     // 30ms before end for same-video jumps
-const END_MARGIN_XVID_SEC = 0.10;     // keep cross-video looser (avoid overshoot)
-const NEAR_END_WINDOW_SEC = 0.60;     // enter aggressive mode this close to end
-const POLL_NEAR_END_MS = 25;          // iPhone 17 optimization (more CPU, tighter)
+const END_MARGIN_SEC = 0.14;
+const POLL_MS = 140;
 
-/* =========================
-   STATE
-   ========================= */
-let player = null;
-let playerReady = false;
-let started = false;
+// Faster transition tuning
+const FADE_OUT_AT_END_SEC = 0.30;  // fade later
+const FADE_IN_AFTER_PLAY_MS = 120; // quicker fade-in
 
+let player;
 let segIndex = 0;
-
-// Monitoring handles
 let monitoring = false;
 let rafId = null;
-let nearEndIntervalId = null;
+let intervalId = null;
+let started = false;
+let fadingOut = false;
 
-const flashEl = document.getElementById("flash");
-function flash() {
-  flashEl.classList.add("on");
-  setTimeout(() => flashEl.classList.remove("on"), 60);
-}
+const fadeEl = document.getElementById("fade");
 
-/* =========================
-   YT IFrame API load
-   ========================= */
 const tag = document.createElement("script");
 tag.src = "https://www.youtube.com/iframe_api";
 document.head.appendChild(tag);
 
 window.onYouTubeIframeAPIReady = () => {
   player = new YT.Player("player", {
-    // Using nocookie host is fine, but it can affect login cookies in some cases.
-    // If your Premium login works best with the normal host, leave host unset.
-    // host: "https://www.youtube-nocookie.com",
+    host: "https://www.youtube-nocookie.com",
     videoId: segments[0].videoId,
     playerVars: {
       playsinline: 1,
-      controls: 1,            // manual play/pause
       rel: 0,
       modestbranding: 1,
+      controls: 0,
+      fs: 0,
+      disablekb: 1,
       origin: window.location.origin
     },
-    events: {
-      onReady: () => { playerReady = true; },
-      onStateChange
-    }
+    events: { onStateChange }
   });
 };
 
 function onStateChange(e) {
-  if (e.data === YT.PlayerState.PLAYING) startMonitoring();
-  if (e.data === YT.PlayerState.PAUSED ||
-      e.data === YT.PlayerState.ENDED ||
-      e.data === YT.PlayerState.BUFFERING) {
-    stopMonitoring();
+  if (e.data === YT.PlayerState.PLAYING) {
+    startMonitoring();
+    setTimeout(() => fadeOff(), FADE_IN_AFTER_PLAY_MS);
   }
+
+  if (e.data === YT.PlayerState.BUFFERING) stopMonitoring();
+  if (e.data === YT.PlayerState.PAUSED || e.data === YT.PlayerState.ENDED)
+    stopMonitoring();
 }
 
-/* =========================
-   Helpers
-   ========================= */
-function safeTime() {
-  try { return player.getCurrentTime() || 0; } catch { return 0; }
+function fadeOn() {
+  fadeEl.classList.add("on");
+}
+function fadeOff() {
+  fadeEl.classList.remove("on");
+  fadingOut = false;
 }
 
-function currentVideoId() {
-  try { return player.getVideoData().video_id || ""; } catch { return ""; }
-}
-
-function isSameVideo(nextIdx) {
-  const cur = segments[segIndex];
-  const nxt = segments[nextIdx];
-  return cur && nxt && cur.videoId === nxt.videoId;
-}
-
-/* =========================
-   Monitoring (two-phase)
-   - rAF always
-   - near-end aggressive setInterval only for same-video next cut
-   ========================= */
 function stopMonitoring() {
   monitoring = false;
   if (rafId) cancelAnimationFrame(rafId);
   rafId = null;
-  if (nearEndIntervalId) clearInterval(nearEndIntervalId);
-  nearEndIntervalId = null;
+  if (intervalId) clearInterval(intervalId);
+  intervalId = null;
 }
 
 function startMonitoring() {
@@ -157,44 +134,56 @@ function startMonitoring() {
 
     const s = segments[segIndex];
     const t = safeTime();
-    const nextIdx = segIndex + 1;
 
-    const sameNext = (nextIdx < segments.length) && isSameVideo(nextIdx);
-    const margin = sameNext ? END_MARGIN_SAME_SEC : END_MARGIN_XVID_SEC;
-
-    // Cut point
-    if (t >= s.end - margin) {
-      nextSegment();
-      return;
+    if (!fadingOut && (s.end - t) <= FADE_OUT_AT_END_SEC) {
+      fadingOut = true;
+      fadeOn();
     }
 
-    // Aggressive polling near end ONLY if next is same-video
-    if (sameNext && nearEndIntervalId === null && (s.end - t) <= NEAR_END_WINDOW_SEC) {
-      nearEndIntervalId = setInterval(() => {
-        if (!monitoring) return;
-        const tt = safeTime();
-        if (tt >= s.end - END_MARGIN_SAME_SEC) nextSegment();
-      }, POLL_NEAR_END_MS);
+    if (t >= s.end - END_MARGIN_SEC) {
+      nextSegment();
+      return;
     }
 
     rafId = requestAnimationFrame(check);
   };
 
   rafId = requestAnimationFrame(check);
+
+  intervalId = setInterval(() => {
+    if (!monitoring) return;
+    const s = segments[segIndex];
+    const t = safeTime();
+
+    if (!fadingOut && (s.end - t) <= FADE_OUT_AT_END_SEC) {
+      fadingOut = true;
+      fadeOn();
+    }
+
+    if (t >= s.end - END_MARGIN_SEC) nextSegment();
+  }, POLL_MS);
 }
 
-/* =========================
-   Playback
-   ========================= */
+function safeTime() {
+  try { return player.getCurrentTime() || 0; }
+  catch { return 0; }
+}
+
+function currentVideoId() {
+  try { return player.getVideoData().video_id || ""; }
+  catch { return ""; }
+}
+
 function playSegment(i) {
   segIndex = i;
   const s = segments[segIndex];
   stopMonitoring();
 
-  const curId = currentVideoId();
+  fadeOn();
 
-  // Same-video jumps are the tightest/fastest
-  if (curId && curId === s.videoId) {
+  const cur = currentVideoId();
+
+  if (cur && cur === s.videoId) {
     try {
       player.seekTo(s.start, true);
       player.playVideo();
@@ -202,44 +191,36 @@ function playSegment(i) {
     } catch {}
   }
 
-  // Cross-video: unavoidable load gap (optional tiny flash to mask)
-  flash();
   player.loadVideoById({ videoId: s.videoId, startSeconds: s.start });
 }
 
 function nextSegment() {
   stopMonitoring();
   const next = segIndex + 1;
-  if (next >= segments.length) return;
+
+  if (next >= segments.length) {
+    fadeOn();
+    try { player.pauseVideo(); } catch {}
+    return;
+  }
+
   playSegment(next);
 }
 
-/* =========================
-   Fullscreen "sticky" on iPhone Chrome:
-   - request fullscreen on the iframe when user taps
-   - try to re-enter if it drops
-   ========================= */
-function enterFullscreen() {
-  const iframe = document.querySelector("iframe");
-  if (!iframe) return;
-  if (iframe.requestFullscreen) iframe.requestFullscreen();
-  else if (iframe.webkitRequestFullscreen) iframe.webkitRequestFullscreen();
-}
-
-function keepFullscreen() {
-  if (!document.fullscreenElement) enterFullscreen();
-}
-document.addEventListener("fullscreenchange", keepFullscreen);
-
-/* =========================
-   Start (one tap)
-   ========================= */
 function startPlayback() {
-  if (started || !playerReady) return;
+  if (started) return;
   started = true;
 
-  enterFullscreen();
+  requestFullscreen();
+  fadeOn();
   playSegment(0);
+}
+
+function requestFullscreen() {
+  const elem = document.documentElement;
+  if (elem.requestFullscreen) elem.requestFullscreen();
+  else if (elem.webkitRequestFullscreen) elem.webkitRequestFullscreen();
+  else if (elem.msRequestFullscreen) elem.msRequestFullscreen();
 }
 
 document.addEventListener("click", startPlayback, { once: true });
