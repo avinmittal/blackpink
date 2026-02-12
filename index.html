@@ -3,7 +3,13 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Playback</title>
+<title>Happy Birthday Aadya</title>
+
+<!-- iPhone "App mode" (use Safari → Share → Add to Home Screen for no address bar) -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Aadya Bday">
+<meta name="theme-color" content="#000000">
 
 <link rel="preconnect" href="https://www.youtube.com">
 <link rel="preconnect" href="https://www.youtube-nocookie.com">
@@ -14,38 +20,81 @@
 html, body {
   margin: 0;
   padding: 0;
-  background: black;
+  background: #000;
   height: 100%;
   overflow: hidden;
 }
 
-/* Stage container */
+/* Stage */
 #stage {
   position: fixed;
   inset: 0;
-  background: black;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transform-origin: center center;
+  background: #000;
 }
 
-/* Player fills stage */
+/* Player fills screen */
 #player {
   width: 100vw;
   height: 100vh;
 }
 
-/* Super-tight "almost invisible" cut mask */
+/* Tight cut mask */
 #fade {
   position: fixed;
   inset: 0;
-  background: black;
+  background: #000;
   pointer-events: none;
   opacity: 0;
-  transition: opacity 120ms linear; /* tighter */
+  transition: opacity 120ms linear;
+  z-index: 40;
 }
 #fade.on { opacity: 1; }
+
+/* Confetti layer */
+#confetti {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 80ms linear;
+  z-index: 50;
+}
+
+/* 1-second splash */
+#splash {
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(circle at 50% 40%, rgba(255,255,255,0.12), rgba(0,0,0,0.95) 60%),
+              linear-gradient(135deg, rgba(255,0,150,0.22), rgba(0,200,255,0.14));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  z-index: 60;
+  opacity: 0;
+  transform: scale(1.02);
+  transition: opacity 140ms ease-out, transform 140ms ease-out;
+}
+#splash.on {
+  opacity: 1;
+  transform: scale(1);
+}
+#splashText {
+  font-family: -apple-system, system-ui, Segoe UI, Roboto, Arial;
+  font-weight: 900;
+  letter-spacing: 0.5px;
+  font-size: clamp(34px, 6vw, 76px);
+  line-height: 1.05;
+  color: #fff;
+  text-shadow: 0 10px 30px rgba(0,0,0,0.6);
+  padding: 0 18px;
+}
+#splashSub {
+  margin-top: 10px;
+  font-size: clamp(14px, 2vw, 20px);
+  font-weight: 600;
+  opacity: 0.9;
+}
 </style>
 </head>
 <body>
@@ -53,9 +102,19 @@ html, body {
 <div id="stage">
   <div id="player"></div>
 </div>
+
+<canvas id="confetti"></canvas>
 <div id="fade"></div>
 
+<div id="splash">
+  <div>
+    <div id="splashText">Happy Birthday Aadya</div>
+    <div id="splashSub">🎉 Let’s party! 🎶</div>
+  </div>
+</div>
+
 <script>
+/* ========= SEGMENTS ========= */
 const segments = [
   { videoId: "IHNzOHi8sJs", start: 0,  end: 24 },
   { videoId: "IHNzOHi8sJs", start: 66, end: 94 },
@@ -64,14 +123,20 @@ const segments = [
   { videoId: "bwmSjveL3Lc", start: 82, end: 113 }
 ];
 
-// iOS timing tuning
+/* ========= iOS timing tuning ========= */
 const END_MARGIN_SEC = 0.14;
 const POLL_MS = 110;
 
-// Birthday-party energetic: super short cut mask
-const FADE_OUT_AT_END_SEC = 0.18; // start mask very close to end
-const FADE_IN_AFTER_PLAY_MS = 60; // pop back quickly
+/* ========= Sharp cut mask ========= */
+const FADE_OUT_AT_END_SEC = 0.18;
+const FADE_IN_AFTER_PLAY_MS = 60;
 
+/* ========= Party extras ========= */
+const SHOW_SPLASH_MS = 1000;        // 1-second intro splash
+const CONFETTI_BURST_MS = 260;      // short burst between clips
+const CONFETTI_FADE_MS = 110;
+
+/* ========= State ========= */
 let player;
 let segIndex = 0;
 let monitoring = false;
@@ -81,9 +146,94 @@ let started = false;
 let fadingOut = false;
 
 const fadeEl = document.getElementById("fade");
-const stageEl = document.getElementById("stage");
+const splashEl = document.getElementById("splash");
+const confettiCanvas = document.getElementById("confetti");
+const ctx = confettiCanvas.getContext("2d", { alpha: true });
 
-// Load IFrame API
+/* ========= Confetti (simple, subtle, energetic) ========= */
+let confettiParticles = [];
+let confettiAnimating = false;
+let confettiTimer = null;
+
+function resizeConfetti() {
+  confettiCanvas.width = Math.floor(window.innerWidth * devicePixelRatio);
+  confettiCanvas.height = Math.floor(window.innerHeight * devicePixelRatio);
+  confettiCanvas.style.width = window.innerWidth + "px";
+  confettiCanvas.style.height = window.innerHeight + "px";
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+}
+resizeConfetti();
+window.addEventListener("resize", resizeConfetti);
+
+function spawnConfettiBurst() {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+
+  confettiParticles = [];
+  const count = 90; // subtle but energetic
+  for (let i = 0; i < count; i++) {
+    const x = Math.random() * w;
+    const y = -10 - Math.random() * 60;
+    const size = 3 + Math.random() * 5;
+    const speedY = 2.5 + Math.random() * 5.5;
+    const driftX = (Math.random() - 0.5) * 2.2;
+    const rot = Math.random() * Math.PI;
+    const rotSpd = (Math.random() - 0.5) * 0.28;
+
+    // bright party palette (no need for perfect accuracy)
+    const colors = ["#ff2bd6", "#00e5ff", "#ffe600", "#7CFF00", "#ff6b00", "#ffffff"];
+    const color = colors[(Math.random() * colors.length) | 0];
+
+    confettiParticles.push({ x, y, size, speedY, driftX, rot, rotSpd, color, life: 1 });
+  }
+
+  confettiCanvas.style.opacity = "1";
+  if (!confettiAnimating) {
+    confettiAnimating = true;
+    requestAnimationFrame(confettiLoop);
+  }
+
+  // fade out quickly
+  clearTimeout(confettiTimer);
+  confettiTimer = setTimeout(() => {
+    confettiCanvas.style.transition = `opacity ${CONFETTI_FADE_MS}ms linear`;
+    confettiCanvas.style.opacity = "0";
+    setTimeout(() => {
+      confettiParticles = [];
+      ctx.clearRect(0, 0, confettiCanvas.width, confettiCanvas.height);
+      confettiAnimating = false;
+    }, CONFETTI_FADE_MS + 30);
+  }, CONFETTI_BURST_MS);
+}
+
+function confettiLoop() {
+  if (!confettiAnimating) return;
+
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  ctx.clearRect(0, 0, confettiCanvas.width, confettiCanvas.height);
+
+  for (const p of confettiParticles) {
+    p.y += p.speedY;
+    p.x += p.driftX;
+    p.rot += p.rotSpd;
+
+    // Draw as small rotating rectangle
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.rot);
+    ctx.fillStyle = p.color;
+    ctx.fillRect(-p.size * 0.6, -p.size * 0.4, p.size * 1.2, p.size * 0.8);
+    ctx.restore();
+  }
+
+  // keep animating while particles exist
+  const anyAlive = confettiParticles.some(p => p.y < h + 40);
+  if (anyAlive) requestAnimationFrame(confettiLoop);
+  else confettiAnimating = false;
+}
+
+/* ========= YouTube IFrame API ========= */
 const tag = document.createElement("script");
 tag.src = "https://www.youtube.com/iframe_api";
 document.head.appendChild(tag);
@@ -108,15 +258,17 @@ window.onYouTubeIframeAPIReady = () => {
 function onStateChange(e) {
   if (e.data === YT.PlayerState.PLAYING) {
     startMonitoring();
-    setTimeout(fadeOff, FADE_IN_AFTER_PLAY_MS);
+    setTimeout(() => fadeOff(), FADE_IN_AFTER_PLAY_MS);
   }
   if (e.data === YT.PlayerState.BUFFERING) stopMonitoring();
   if (e.data === YT.PlayerState.PAUSED || e.data === YT.PlayerState.ENDED) stopMonitoring();
 }
 
+/* ========= Fade helpers ========= */
 function fadeOn()  { fadeEl.classList.add("on"); }
 function fadeOff() { fadeEl.classList.remove("on"); fadingOut = false; }
 
+/* ========= Monitor loop ========= */
 function stopMonitoring() {
   monitoring = false;
   if (rafId) cancelAnimationFrame(rafId);
@@ -135,13 +287,12 @@ function startMonitoring() {
     const s = segments[segIndex];
     const t = safeTime();
 
-    // Tiny mask just before the cut
+    // Tight mask right before cut
     if (!fadingOut && (s.end - t) <= FADE_OUT_AT_END_SEC) {
       fadingOut = true;
       fadeOn();
     }
 
-    // Cut to next segment
     if (t >= s.end - END_MARGIN_SEC) {
       nextSegment();
       return;
@@ -154,7 +305,6 @@ function startMonitoring() {
 
   intervalId = setInterval(() => {
     if (!monitoring) return;
-
     const s = segments[segIndex];
     const t = safeTime();
 
@@ -177,17 +327,17 @@ function currentVideoId() {
   catch { return ""; }
 }
 
+/* ========= Playback ========= */
 function playSegment(i) {
   segIndex = i;
   const s = segments[segIndex];
   stopMonitoring();
 
-  // Keep mask ON through the jump
+  // keep mask ON through any jump
   fadeOn();
 
   const cur = currentVideoId();
 
-  // Same video: seek is fastest
   if (cur && cur === s.videoId) {
     try {
       player.seekTo(s.start, true);
@@ -196,7 +346,6 @@ function playSegment(i) {
     } catch {}
   }
 
-  // Cross-video: load is most reliable on iOS
   player.loadVideoById({ videoId: s.videoId, startSeconds: s.start });
 }
 
@@ -210,43 +359,54 @@ function nextSegment() {
     return;
   }
 
+  // confetti pop between clips (short + subtle)
+  spawnConfettiBurst();
+
   playSegment(next);
 }
 
-function requestFullscreen() {
-  const elem = document.documentElement;
-  if (elem.requestFullscreen) elem.requestFullscreen();
-  else if (elem.webkitRequestFullscreen) elem.webkitRequestFullscreen();
-}
-
+/* ========= Orientation helpers ========= */
 function lockLandscape() {
+  // Works on some devices; iPhone often ignores—fallback rotation below helps.
   if (screen.orientation && screen.orientation.lock) {
     screen.orientation.lock("landscape").catch(() => {});
   }
-  // iPhone fallback: rotate stage if portrait
+
+  // iPhone fallback: if portrait, rotate whole stage
+  const stage = document.getElementById("stage");
   if (window.innerHeight > window.innerWidth) {
-    stageEl.style.transform = "rotate(90deg)";
-    stageEl.style.width = "100vh";
-    stageEl.style.height = "100vw";
+    stage.style.transform = "rotate(90deg)";
+    stage.style.width = "100vh";
+    stage.style.height = "100vw";
+  } else {
+    stage.style.transform = "none";
+    stage.style.width = "100vw";
+    stage.style.height = "100vh";
   }
 }
 
+/* ========= Start (tap anywhere once) ========= */
 function startPlayback() {
   if (started) return;
   started = true;
 
-  requestFullscreen();
   lockLandscape();
 
-  fadeOn();         // start masked
-  playSegment(0);   // will fadeOff shortly after PLAYING
+  // 1-second splash, then start the chain
+  splashEl.classList.add("on");
+  fadeOn();
+
+  setTimeout(() => {
+    splashEl.classList.remove("on");
+    // tiny confetti at start for full party energy
+    spawnConfettiBurst();
+    playSegment(0);
+  }, SHOW_SPLASH_MS);
 }
 
-// Tap anywhere once (buttonless)
 document.addEventListener("click", startPlayback, { once: true });
 document.addEventListener("touchstart", startPlayback, { once: true });
 
-// Keep landscape if user rotates mid-play
 window.addEventListener("resize", () => {
   if (started) lockLandscape();
 });
