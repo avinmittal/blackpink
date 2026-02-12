@@ -1,374 +1,233 @@
+
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Multi-Segment YouTube Player (iPhone Chrome optimized)</title>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Playback</title>
 
-  <!-- Reduce DNS/TLS handshake latency -->
-  <link rel="preconnect" href="https://www.youtube.com">
-  <link rel="preconnect" href="https://www.youtube-nocookie.com">
-  <link rel="preconnect" href="https://www.google.com">
-  <link rel="preconnect" href="https://i.ytimg.com">
+<link rel="preconnect" href="https://www.youtube.com">
+<link rel="preconnect" href="https://www.youtube-nocookie.com">
+<link rel="preconnect" href="https://www.google.com">
+<link rel="preconnect" href="https://i.ytimg.com">
 
-  <style>
-    body { font-family: -apple-system, system-ui, Segoe UI, Roboto, Arial; margin: 18px; }
-    .wrap { width: 100%; max-width: 900px; aspect-ratio: 16/9; position: relative; }
-    .playerWrap { position:absolute; inset:0; }
-    #wrap1, #wrap2 { display:none; } /* hidden preload players */
+<style>
+html, body {
+  margin: 0;
+  padding: 0;
+  background: black;
+  height: 100%;
+  overflow: hidden;
+}
 
-    button { padding: 10px 14px; font-size: 16px; margin-right: 8px; }
-    .hint { margin-top: 10px; opacity: .75; font-size: 14px; line-height: 1.35; }
-    .status { margin-top: 10px; font-size: 14px; }
-    .debug {
-      margin-top: 10px;
-      font-size: 12px;
-      opacity: .85;
-      background: #f4f4f4;
-      border-radius: 10px;
-      padding: 10px 12px;
-      white-space: pre-wrap;
-      line-height: 1.35;
-    }
-    code { background: #eee; padding: 2px 6px; border-radius: 6px; }
-  </style>
+#stage {
+  position: fixed;
+  inset: 0;
+  background: black;
+}
+
+#player {
+  width: 100%;
+  height: 100%;
+}
+
+#fade {
+  position: fixed;
+  inset: 0;
+  background: black;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 420ms ease-in-out; /* softer */
+}
+
+#fade.on {
+  opacity: 1;
+}
+</style>
 </head>
 <body>
-  <h3>Segments player (optimized for iPhone Chrome / iOS WebKit)</h3>
 
-  <div class="wrap">
-    <div id="wrap0" class="playerWrap"><div id="p0"></div></div>
-    <div id="wrap1" class="playerWrap"><div id="p1"></div></div>
-    <div id="wrap2" class="playerWrap"><div id="p2"></div></div>
-  </div>
+<div id="stage">
+  <div id="player"></div>
+</div>
+<div id="fade"></div>
 
-  <div style="margin-top:12px;">
-    <button id="playBtn">Play segments</button>
-    <button id="stopBtn">Stop</button>
-    <button id="toggleDbgBtn">Toggle debug</button>
-  </div>
+<script>
+const segments = [
+  { videoId: "IHNzOHi8sJs", start: 0,  end: 24 },
+  { videoId: "IHNzOHi8sJs", start: 66, end: 94 },
+  { videoId: "2S24-y0Ij3Y", start: 59, end: 92 },
+  { videoId: "bwmSjveL3Lc", start: 0,  end: 55 },
+  { videoId: "bwmSjveL3Lc", start: 82, end: 113 }
+];
 
-  <div class="hint">
-    iPhone blocks autoplay. Tap <b>Play segments</b> once.
-    <br/>This uses 2 hidden players to preload the next 2 segments (muted + fully paused).
-    <br/>Hidden players are forced to low quality (<code>small</code>) to reduce cold-load bandwidth.
-  </div>
+// iOS timing tuning
+const END_MARGIN_SEC = 0.14;
+const POLL_MS = 140;
 
-  <div class="status" id="status"></div>
-  <div class="debug" id="debug" style="display:none;"></div>
+// Softer fade tuning
+const FADE_OUT_AT_END_SEC = 0.55;   // fade earlier
+const FADE_IN_AFTER_PLAY_MS = 220;  // gentle fade-in delay
 
-  <script>
-    /***************
-     * SEGMENTS LIST
-     ***************/
-    const segments = [
-      { videoId: "IHNzOHi8sJs", start: 0,  end: 24 },
-      { videoId: "IHNzOHi8sJs", start: 66, end: 94 },
-      { videoId: "2S24-y0Ij3Y", start: 59, end: 92 },
-      { videoId: "bwmSjveL3Lc", start: 0,  end: 55 },
-      { videoId: "bwmSjveL3Lc", start: 82, end: 113 } // 1:22–1:53
-    ];
+let player;
+let segIndex = 0;
+let monitoring = false;
+let rafId = null;
+let intervalId = null;
+let started = false;
+let fadingOut = false;
 
-    /****************
-     * TUNING KNOBS
-     ****************/
-    const END_MARGIN_SEC = 0.14;      // slightly higher for iOS timer granularity
-    const MONITOR_INTERVAL_MS = 140;  // fallback polling
-    const HIDDEN_QUALITY = "small";   // lower quality for hidden preloads
-    const ACTIVE_QUALITY = "auto";    // let active adapt
+const fadeEl = document.getElementById("fade");
 
-    /****************
-     * UI HELPERS
-     ****************/
-    const statusEl = document.getElementById("status");
-    const dbgEl = document.getElementById("debug");
-    let debugOn = false;
+const tag = document.createElement("script");
+tag.src = "https://www.youtube.com/iframe_api";
+document.head.appendChild(tag);
 
-    function setStatus(msg) { statusEl.textContent = msg; }
-    function setDebug(msg) { if (debugOn) dbgEl.textContent = msg; }
+window.onYouTubeIframeAPIReady = () => {
+  player = new YT.Player("player", {
+    host: "https://www.youtube-nocookie.com",
+    videoId: segments[0].videoId,
+    playerVars: {
+      playsinline: 1,
+      rel: 0,
+      modestbranding: 1,
+      controls: 0,
+      fs: 0,
+      disablekb: 1,
+      origin: window.location.origin
+    },
+    events: { onStateChange }
+  });
+};
 
-    document.getElementById("toggleDbgBtn").addEventListener("click", () => {
-      debugOn = !debugOn;
-      dbgEl.style.display = debugOn ? "block" : "none";
-      if (!debugOn) dbgEl.textContent = "";
-    });
+function onStateChange(e) {
+  if (e.data === YT.PlayerState.PLAYING) {
+    startMonitoring();
+    setTimeout(() => fadeOff(), FADE_IN_AFTER_PLAY_MS);
+  }
 
-    /****************
-     * PLAYERS + STATE
-     ****************/
-    const players = [null, null, null];
-    const wraps = ["wrap0", "wrap1", "wrap2"];
+  if (e.data === YT.PlayerState.BUFFERING) stopMonitoring();
+  if (e.data === YT.PlayerState.PAUSED || e.data === YT.PlayerState.ENDED)
+    stopMonitoring();
+}
 
-    let segIndex = 0;
+function fadeOn() {
+  fadeEl.classList.add("on");
+}
+function fadeOff() {
+  fadeEl.classList.remove("on");
+  fadingOut = false;
+}
 
-    // visible active player index
-    let activeIdx = 0;
+function stopMonitoring() {
+  monitoring = false;
+  if (rafId) cancelAnimationFrame(rafId);
+  rafId = null;
+  if (intervalId) clearInterval(intervalId);
+  intervalId = null;
+}
 
-    // hidden players used for preloading the next 2 segments
-    let hiddenA = 1;
-    let hiddenB = 2;
+function startMonitoring() {
+  if (monitoring) return;
+  monitoring = true;
 
-    // monitor loop
-    let monitoring = false;
-    let rafId = null;
-    let intervalId = null;
+  const check = () => {
+    if (!monitoring) return;
 
-    // track what each player is currently cued/loaded to avoid redundant cues
-    const playerVideoId = ["", "", ""];
+    const s = segments[segIndex];
+    const t = safeTime();
 
-    /****************
-     * LOAD IFRAME API
-     ****************/
-    const tag = document.createElement("script");
-    tag.src = "https://www.youtube.com/iframe_api";
-    document.head.appendChild(tag);
-
-    window.onYouTubeIframeAPIReady = () => {
-      players[0] = new YT.Player("p0", mkCfg(segments[0].videoId));
-      players[1] = new YT.Player("p1", mkCfg(segments[0].videoId));
-      players[2] = new YT.Player("p2", mkCfg(segments[0].videoId));
-      setStatus("Ready. Tap “Play segments”.");
-    };
-
-    function mkCfg(initialVideoId) {
-      return {
-        host: "https://www.youtube-nocookie.com",
-        videoId: initialVideoId,
-        playerVars: {
-          playsinline: 1,
-          rel: 0,
-          modestbranding: 1,
-          origin: window.location.origin
-        },
-        events: { onStateChange }
-      };
+    if (!fadingOut && (s.end - t) <= FADE_OUT_AT_END_SEC) {
+      fadingOut = true;
+      fadeOn();
     }
 
-    function showOnly(i) {
-      for (let k = 0; k < wraps.length; k++) {
-        document.getElementById(wraps[k]).style.display = (k === i) ? "block" : "none";
-      }
+    if (t >= s.end - END_MARGIN_SEC) {
+      nextSegment();
+      return;
     }
 
-    function onStateChange(e) {
-      // Only care about state changes from the active player
-      if (e.target !== players[activeIdx]) return;
+    rafId = requestAnimationFrame(check);
+  };
 
-      if (e.data === YT.PlayerState.PLAYING) startMonitoring();
-      if (e.data === YT.PlayerState.PAUSED || e.data === YT.PlayerState.ENDED || e.data === YT.PlayerState.BUFFERING) {
-        stopMonitoring();
-      }
+  rafId = requestAnimationFrame(check);
+
+  intervalId = setInterval(() => {
+    if (!monitoring) return;
+    const s = segments[segIndex];
+    const t = safeTime();
+
+    if (!fadingOut && (s.end - t) <= FADE_OUT_AT_END_SEC) {
+      fadingOut = true;
+      fadeOn();
     }
 
-    /****************
-     * QUALITY + MUTE HELPERS
-     ****************/
-    function ensureHiddenPausedMutedLowQ(p) {
-      try { p.mute(); } catch {}
-      try { p.pauseVideo(); } catch {}
+    if (t >= s.end - END_MARGIN_SEC) nextSegment();
+  }, POLL_MS);
+}
 
-      // On iOS WebKit these may no-op sometimes; that's OK.
-      try { p.setPlaybackQuality(HIDDEN_QUALITY); } catch {}
-      try { p.setPlaybackQualityRange(HIDDEN_QUALITY); } catch {}
-    }
+function safeTime() {
+  try { return player.getCurrentTime() || 0; }
+  catch { return 0; }
+}
 
-    function ensureActiveUnmutedAutoQ(p) {
-      try { p.unMute(); } catch {}
-      try { p.setPlaybackQuality(ACTIVE_QUALITY); } catch {}
-      try { p.setPlaybackQualityRange(ACTIVE_QUALITY); } catch {}
-    }
+function currentVideoId() {
+  try { return player.getVideoData().video_id || ""; }
+  catch { return ""; }
+}
 
-    /****************
-     * MONITOR LOOP
-     ****************/
-    function stopMonitoring() {
-      monitoring = false;
-      if (rafId) cancelAnimationFrame(rafId);
-      rafId = null;
-      if (intervalId) clearInterval(intervalId);
-      intervalId = null;
-    }
+function playSegment(i) {
+  segIndex = i;
+  const s = segments[segIndex];
+  stopMonitoring();
 
-    function startMonitoring() {
-      if (monitoring) return;
-      monitoring = true;
+  fadeOn();
 
-      const check = () => {
-        if (!monitoring) return;
+  const cur = currentVideoId();
 
-        const s = segments[segIndex];
-        const p = players[activeIdx];
-        const t = safeTime(p);
+  if (cur && cur === s.videoId) {
+    try {
+      player.seekTo(s.start, true);
+      player.playVideo();
+      return;
+    } catch {}
+  }
 
-        if (t >= s.end - END_MARGIN_SEC) {
-          nextSegment();
-          return;
-        }
-        rafId = requestAnimationFrame(check);
-      };
+  player.loadVideoById({ videoId: s.videoId, startSeconds: s.start });
+}
 
-      rafId = requestAnimationFrame(check);
+function nextSegment() {
+  stopMonitoring();
+  const next = segIndex + 1;
 
-      intervalId = setInterval(() => {
-        if (!monitoring) return;
-        const s = segments[segIndex];
-        const p = players[activeIdx];
-        const t = safeTime(p);
-        if (t >= s.end - END_MARGIN_SEC) nextSegment();
-      }, MONITOR_INTERVAL_MS);
-    }
+  if (next >= segments.length) {
+    fadeOn();
+    try { player.pauseVideo(); } catch {}
+    return;
+  }
 
-    function safeTime(p) {
-      try { return p.getCurrentTime() || 0; } catch { return 0; }
-    }
+  playSegment(next);
+}
 
-    /****************
-     * PRELOAD LOGIC (2 hidden players)
-     ****************/
-    function cueOn(playerIdx, seg) {
-      const p = players[playerIdx];
-      if (!p) return;
+function startPlayback() {
+  if (started) return;
+  started = true;
 
-      // Avoid redundant cue calls if same video already cued/loaded
-      // (still OK if it happens; this just reduces churn)
-      if (playerVideoId[playerIdx] !== seg.videoId) {
-        playerVideoId[playerIdx] = seg.videoId;
-      }
+  requestFullscreen();
+  fadeOn();
+  playSegment(0);
+}
 
-      p.cueVideoById({
-        videoId: seg.videoId,
-        startSeconds: seg.start
-      });
+function requestFullscreen() {
+  const elem = document.documentElement;
+  if (elem.requestFullscreen) elem.requestFullscreen();
+  else if (elem.webkitRequestFullscreen) elem.webkitRequestFullscreen();
+  else if (elem.msRequestFullscreen) elem.msRequestFullscreen();
+}
 
-      ensureHiddenPausedMutedLowQ(p);
-    }
+document.addEventListener("click", startPlayback, { once: true });
+document.addEventListener("touchstart", startPlayback, { once: true });
+</script>
 
-    function preloadNextTwo() {
-      const next1 = segments[segIndex + 1];
-      const next2 = segments[segIndex + 2];
-
-      if (next1) cueOn(hiddenA, next1);
-      if (next2) cueOn(hiddenB, next2);
-
-      setStatus(
-        `Playing ${segIndex + 1}/${segments.length}. ` +
-        (next1 ? `Preloaded next on P${hiddenA}. ` : "") +
-        (next2 ? `Preloaded +2 on P${hiddenB}.` : "")
-      );
-    }
-
-    /****************
-     * PLAYBACK
-     ****************/
-    function loadAndPlayOnActive(seg) {
-      stopMonitoring();
-
-      const p = players[activeIdx];
-      playerVideoId[activeIdx] = seg.videoId;
-
-      // Use loadVideoById for deterministic start (esp. iOS)
-      p.loadVideoById({
-        videoId: seg.videoId,
-        startSeconds: seg.start
-      });
-
-      ensureActiveUnmutedAutoQ(p);
-      // Monitoring begins when PLAYING event fires.
-    }
-
-    function startSequence() {
-      segIndex = 0;
-
-      // Reset roles
-      activeIdx = 0;
-      hiddenA = 1;
-      hiddenB = 2;
-
-      showOnly(activeIdx);
-
-      loadAndPlayOnActive(segments[segIndex]);
-
-      // Give the player a moment, then preload
-      setTimeout(preloadNextTwo, 500);
-
-      setDebug("Sequence started.");
-    }
-
-    function nextSegment() {
-      stopMonitoring();
-
-      const nextIdx = segIndex + 1;
-      if (nextIdx >= segments.length) {
-        try { players[activeIdx].pauseVideo(); } catch {}
-        setStatus("Done.");
-        setDebug("Reached end of playlist.");
-        return;
-      }
-
-      const curr = segments[segIndex];
-      const next = segments[nextIdx];
-
-      // Advance playlist pointer now
-      segIndex = nextIdx;
-
-      const activeP = players[activeIdx];
-
-      // If same video, you might be tempted to seek—but on iOS, loadVideoById can be more consistent.
-      // We’ll still try seek first; if it fails, fallback to load.
-      if (next.videoId === curr.videoId) {
-        try {
-          activeP.seekTo(next.start, true);
-          activeP.playVideo();
-          ensureActiveUnmutedAutoQ(activeP);
-          setTimeout(preloadNextTwo, 380);
-          setDebug(`Same video transition. Active P${activeIdx}. seg=${segIndex+1}`);
-          return;
-        } catch {
-          // fallback
-          loadAndPlayOnActive(next);
-          setTimeout(preloadNextTwo, 520);
-          setDebug(`Same video seek failed -> loadVideoById. Active P${activeIdx}. seg=${segIndex+1}`);
-          return;
-        }
-      }
-
-      // Cross-video: swap to hiddenA (preloaded for "next")
-      const oldActive = activeIdx;
-      activeIdx = hiddenA;
-      hiddenA = oldActive; // recycle old active as new hiddenA
-      // hiddenB stays the same
-
-      // show newly active player
-      showOnly(activeIdx);
-
-      // IMPORTANT: hidden players remain muted/paused/lowQ, but once they become active we unmute & autoQ
-      loadAndPlayOnActive(next);
-
-      // After switching, preload next two segments again
-      setTimeout(preloadNextTwo, 650);
-
-      setDebug(
-        `Cross-video transition.\n` +
-        `Now active: P${activeIdx}\n` +
-        `Recycled hiddenA: P${hiddenA}\n` +
-        `HiddenB: P${hiddenB}\n` +
-        `Segment: ${segIndex+1}/${segments.length}`
-      );
-    }
-
-    function stopAll() {
-      stopMonitoring();
-      for (const p of players) {
-        try { p.pauseVideo(); } catch {}
-        try { p.mute(); } catch {}
-        try { p.setPlaybackQuality(HIDDEN_QUALITY); } catch {}
-      }
-      setStatus("Stopped.");
-      setDebug("Stopped all players.");
-    }
-
-    document.getElementById("playBtn").addEventListener("click", startSequence);
-    document.getElementById("stopBtn").addEventListener("click", stopAll);
-  </script>
 </body>
 </html>
