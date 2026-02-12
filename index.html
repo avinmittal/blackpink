@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Happy Birthday Aadya</title>
 
-<!-- iPhone "App mode" (Safari → Share → Add to Home Screen removes address bar) -->
+<!-- iPhone app mode (Safari → Share → Add to Home Screen) -->
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
 <meta name="apple-mobile-web-app-title" content="Aadya Bday">
@@ -18,35 +18,28 @@
 
 <style>
 html, body { margin:0; padding:0; background:#000; height:100%; overflow:hidden; }
-
-#stage { position:fixed; inset:0; background:#000; transform-origin:center center; }
-#player { width:100vw; height:100vh; }
+#stage { position:fixed; inset:0; background:#000; }
+#player { width:100%; height:100%; }
 
 /* Tight cut mask */
-#fade {
+#fade{
   position:fixed; inset:0; background:#000; pointer-events:none;
   opacity:0; transition:opacity 120ms linear; z-index:40;
 }
-#fade.on { opacity:1; }
+#fade.on{ opacity:1; }
 
-/* Confetti */
-#confetti {
-  position:fixed; inset:0; pointer-events:none; opacity:0;
-  transition:opacity 110ms linear; z-index:50;
-}
-
-/* Splash banner (sits on top while video already starts underneath) */
-#splash {
+/* Splash overlay (tap-to-start) */
+#splash{
   position:fixed; inset:0;
   background: radial-gradient(circle at 50% 40%, rgba(255,255,255,0.12), rgba(0,0,0,0.95) 60%),
               linear-gradient(135deg, rgba(255,0,150,0.28), rgba(0,200,255,0.18));
   display:flex; align-items:center; justify-content:center; text-align:center;
-  z-index:60; opacity:0; transform:scale(1.02);
+  z-index:60; opacity:1; transform:scale(1.02);
   transition: opacity 140ms ease-out, transform 140ms ease-out;
 }
-#splash.on { opacity:1; transform:scale(1); }
+#splash.off{ opacity:0; transform:scale(1); }
 
-#splashText {
+#splashText{
   font-family:-apple-system, system-ui, Segoe UI, Roboto, Arial;
   font-weight:900; letter-spacing:0.5px;
   font-size:clamp(34px, 6vw, 76px);
@@ -54,24 +47,22 @@ html, body { margin:0; padding:0; background:#000; height:100%; overflow:hidden;
   text-shadow:0 10px 30px rgba(0,0,0,0.6);
   padding:0 18px;
 }
-#splashSub { margin-top:10px; font-size:clamp(14px, 2vw, 20px); font-weight:700; opacity:0.95; }
+#splashSub{ margin-top:10px; font-size:clamp(14px, 2vw, 20px); font-weight:700; opacity:0.95; }
 </style>
 </head>
 <body>
 
 <div id="stage"><div id="player"></div></div>
-<canvas id="confetti"></canvas>
 <div id="fade"></div>
 
-<div id="splash" class="on">
+<div id="splash">
   <div>
     <div id="splashText">Happy Birthday Aadya</div>
-    <div id="splashSub">🎉 Tap anywhere to start 🎶</div>
+    <div id="splashSub">Tap anywhere to start 🎶</div>
   </div>
 </div>
 
 <script>
-/* ========= Segments ========= */
 const segments = [
   { videoId: "IHNzOHi8sJs", start: 0,  end: 24 },
   { videoId: "IHNzOHi8sJs", start: 66, end: 94 },
@@ -80,20 +71,17 @@ const segments = [
   { videoId: "bwmSjveL3Lc", start: 82, end: 113 }
 ];
 
-/* ========= Timing (iOS) ========= */
+// iOS tuning
 const END_MARGIN_SEC = 0.14;
 const POLL_MS = 110;
 
-/* ========= Sharp “almost invisible” cut mask ========= */
+// Tight mask settings
 const FADE_OUT_AT_END_SEC = 0.18;
 const FADE_IN_AFTER_PLAY_MS = 60;
 
-/* ========= Splash + confetti ========= */
-const SPLASH_SHOW_MS = 1000;     // keep banner visible for 1s after starting playback
-const CONFETTI_BURST_MS = 260;
-const CONFETTI_FADE_MS = 110;
+// Splash duration
+const SPLASH_SHOW_MS = 1000;
 
-/* ========= State ========= */
 let player;
 let playerReady = false;
 let pendingStart = false;
@@ -107,87 +95,7 @@ let fadingOut = false;
 
 const fadeEl = document.getElementById("fade");
 const splashEl = document.getElementById("splash");
-const stageEl = document.getElementById("stage");
 
-/* ========= Confetti ========= */
-const confettiCanvas = document.getElementById("confetti");
-const ctx = confettiCanvas.getContext("2d", { alpha: true });
-let confettiParticles = [];
-let confettiAnimating = false;
-let confettiTimer = null;
-
-function resizeConfetti() {
-  confettiCanvas.width = Math.floor(window.innerWidth * devicePixelRatio);
-  confettiCanvas.height = Math.floor(window.innerHeight * devicePixelRatio);
-  confettiCanvas.style.width = window.innerWidth + "px";
-  confettiCanvas.style.height = window.innerHeight + "px";
-  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
-}
-resizeConfetti();
-window.addEventListener("resize", resizeConfetti);
-
-function spawnConfettiBurst() {
-  const w = window.innerWidth, h = window.innerHeight;
-  confettiParticles = [];
-  const colors = ["#ff2bd6", "#00e5ff", "#ffe600", "#7CFF00", "#ff6b00", "#ffffff"];
-  const count = 90;
-
-  for (let i = 0; i < count; i++) {
-    confettiParticles.push({
-      x: Math.random() * w,
-      y: -10 - Math.random() * 60,
-      size: 3 + Math.random() * 5,
-      speedY: 2.5 + Math.random() * 5.5,
-      driftX: (Math.random() - 0.5) * 2.2,
-      rot: Math.random() * Math.PI,
-      rotSpd: (Math.random() - 0.5) * 0.28,
-      color: colors[(Math.random() * colors.length) | 0]
-    });
-  }
-
-  confettiCanvas.style.transition = "opacity 0ms";
-  confettiCanvas.style.opacity = "1";
-
-  if (!confettiAnimating) {
-    confettiAnimating = true;
-    requestAnimationFrame(confettiLoop);
-  }
-
-  clearTimeout(confettiTimer);
-  confettiTimer = setTimeout(() => {
-    confettiCanvas.style.transition = `opacity ${CONFETTI_FADE_MS}ms linear`;
-    confettiCanvas.style.opacity = "0";
-    setTimeout(() => {
-      confettiParticles = [];
-      ctx.clearRect(0, 0, confettiCanvas.width, confettiCanvas.height);
-      confettiAnimating = false;
-    }, CONFETTI_FADE_MS + 30);
-  }, CONFETTI_BURST_MS);
-}
-
-function confettiLoop() {
-  if (!confettiAnimating) return;
-  const h = window.innerHeight;
-
-  ctx.clearRect(0, 0, confettiCanvas.width, confettiCanvas.height);
-  for (const p of confettiParticles) {
-    p.y += p.speedY;
-    p.x += p.driftX;
-    p.rot += p.rotSpd;
-
-    ctx.save();
-    ctx.translate(p.x, p.y);
-    ctx.rotate(p.rot);
-    ctx.fillStyle = p.color;
-    ctx.fillRect(-p.size * 0.6, -p.size * 0.4, p.size * 1.2, p.size * 0.8);
-    ctx.restore();
-  }
-
-  if (confettiParticles.some(p => p.y < h + 40)) requestAnimationFrame(confettiLoop);
-  else confettiAnimating = false;
-}
-
-/* ========= YouTube IFrame API ========= */
 const tag = document.createElement("script");
 tag.src = "https://www.youtube.com/iframe_api";
 document.head.appendChild(tag);
@@ -200,8 +108,10 @@ window.onYouTubeIframeAPIReady = () => {
       playsinline: 1,
       rel: 0,
       modestbranding: 1,
-      controls: 0,
-      fs: 0,
+
+      // Enable manual play/pause/seek in Home Screen mode
+      controls: 1,
+
       disablekb: 1,
       origin: window.location.origin
     },
@@ -218,17 +128,15 @@ window.onYouTubeIframeAPIReady = () => {
 function onStateChange(e) {
   if (e.data === YT.PlayerState.PLAYING) {
     startMonitoring();
-    setTimeout(() => fadeOff(), FADE_IN_AFTER_PLAY_MS);
+    setTimeout(fadeOff, FADE_IN_AFTER_PLAY_MS);
   }
   if (e.data === YT.PlayerState.BUFFERING) stopMonitoring();
   if (e.data === YT.PlayerState.PAUSED || e.data === YT.PlayerState.ENDED) stopMonitoring();
 }
 
-/* ========= Fade ========= */
-function fadeOn()  { fadeEl.classList.add("on"); }
-function fadeOff() { fadeEl.classList.remove("on"); fadingOut = false; }
+function fadeOn(){ fadeEl.classList.add("on"); }
+function fadeOff(){ fadeEl.classList.remove("on"); fadingOut = false; }
 
-/* ========= Monitor ========= */
 function stopMonitoring() {
   monitoring = false;
   if (rafId) cancelAnimationFrame(rafId);
@@ -274,77 +182,50 @@ function startMonitoring() {
 function safeTime() {
   try { return player.getCurrentTime() || 0; } catch { return 0; }
 }
-
 function currentVideoId() {
   try { return player.getVideoData().video_id || ""; } catch { return ""; }
 }
 
-/* ========= Playback ========= */
 function playSegment(i) {
   segIndex = i;
   const s = segments[segIndex];
   stopMonitoring();
+  fadeOn();
 
-  fadeOn(); // mask any jump
   const cur = currentVideoId();
 
-  // same video: seek
   if (cur && cur === s.videoId) {
     try { player.seekTo(s.start, true); player.playVideo(); return; } catch {}
   }
-  // cross video: load
   player.loadVideoById({ videoId: s.videoId, startSeconds: s.start });
 }
 
 function nextSegment() {
   stopMonitoring();
   const next = segIndex + 1;
-  if (next >= segments.length) { fadeOn(); try { player.pauseVideo(); } catch {} return; }
-
-  spawnConfettiBurst();
+  if (next >= segments.length) { fadeOn(); return; }
   playSegment(next);
 }
 
-/* ========= Landscape ========= */
-function lockLandscape() {
-  if (screen.orientation && screen.orientation.lock) {
-    screen.orientation.lock("landscape").catch(() => {});
-  }
-  if (window.innerHeight > window.innerWidth) {
-    stageEl.style.transform = "rotate(90deg)";
-    stageEl.style.width = "100vh";
-    stageEl.style.height = "100vw";
-  } else {
-    stageEl.style.transform = "none";
-    stageEl.style.width = "100vw";
-    stageEl.style.height = "100vh";
-  }
-}
-
-/* ========= Start (tap anywhere) ========= */
 function startPlayback() {
   if (started) return;
   if (!playerReady) { pendingStart = true; return; }
   started = true;
 
-  lockLandscape();
-
-  // IMPORTANT: start playback immediately inside the tap gesture
-  // (this is what iPhone requires)
-  splashEl.classList.add("on");
+  // Must start immediately inside tap for iPhone autoplay policy
   fadeOn();
-  spawnConfettiBurst();
   playSegment(0);
 
-  // Keep banner visible for 1s while video already runs underneath
+  // Hide splash after 1s and remove from hit-testing so player controls work
   setTimeout(() => {
-    splashEl.classList.remove("on");
+    splashEl.classList.add("off");
+    setTimeout(() => { splashEl.style.display = "none"; }, 200);
   }, SPLASH_SHOW_MS);
 }
 
+// Buttonless: tap anywhere once
 document.addEventListener("click", startPlayback, { once: true });
 document.addEventListener("touchstart", startPlayback, { once: true });
-window.addEventListener("resize", () => { if (started) lockLandscape(); });
 </script>
 
 </body>
